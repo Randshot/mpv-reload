@@ -290,7 +290,7 @@ function debug_info(event)
   msg.debug("seekable =", mp.get_property("seekable"))
 end
 
-function reload(path, time_pos)
+function reload_single(path, time_pos)
   msg.debug("reload", path, time_pos)
   if time_pos == nil then
     mp.commandv("loadfile", path, "replace")
@@ -299,17 +299,46 @@ function reload(path, time_pos)
   end
 end
 
+local reload_time_pos = nil
+local reload_path = nil
+
+function reload_playlist(path, time_pos, playlist_count, playlist_pos)
+  local playlist = {"#EXTM3U"}
+  -- mpv doesn't seem to support this HLS specific M3U tag.
+  -- if not (time_pos == nil) then
+  --   table.insert(playlist, "#EXT-X-START:TIME-OFFSET=" .. time_pos)
+  -- end
+  for i = 0, playlist_count-1 do
+    local filename = mp.get_property("playlist/" .. i .. "/filename")
+    local title = mp.get_property("playlist/" .. i .. "/title")
+    if not (title == nil) then
+      table.insert(playlist, "#EXTINF:0," .. title)
+    end
+    table.insert(playlist, filename)
+  end
+  mp.set_property_number("playlist-start", playlist_pos)
+  mp.commandv("loadfile", "memory://" .. table.concat(playlist, "\n"), "replace")
+  if not (time_pos == nil) then
+    reload_path = path
+    reload_time_pos = time_pos
+    mp.add_hook("on_load", 50, function ()
+      if not (reload_time_pos == nil) and
+        reload_path == mp.get_property("stream-open-filename", "") then
+        msg.debug("reload_playlist hook: setting local start time to:", reload_time_pos)
+        mp.set_property("file-local-options/start", reload_time_pos)
+        reload_path = nil
+        reload_time_pos = nil
+      end
+    end)
+  end
+  -- mp.set_property("stream-open-filename", "memory://" .. table.concat(playlist, "\n"))
+end
+
 function reload_resume()
   local path = mp.get_property("path", property_path)
   local time_pos = mp.get_property("time-pos")
   local reload_duration = mp.get_property_native("duration")
 
-  local playlist_count = mp.get_property_number("playlist/count")
-  local playlist_pos = mp.get_property_number("playlist-pos")
-  local playlist = {}
-  for i = 0, playlist_count-1 do
-      playlist[i] = mp.get_property("playlist/" .. i .. "/filename")
-  end
   -- Tries to determine live stream vs. pre-recordered VOD. VOD has non-zero
   -- duration property. When reloading VOD, to keep the current time position
   -- we should provide offset from the start. Stream doesn't have fixed start.
@@ -317,18 +346,18 @@ function reload_resume()
   -- That's the reason we don't pass the offset when reloading streams.
   if reload_duration and reload_duration > 0 then
     msg.info("reloading video from", time_pos, "second")
-    reload(path, time_pos)
   else
     msg.info("reloading stream")
-    reload(path, nil)
+    time_pos = nil
   end
-  msg.info("file ", playlist_pos+1, " of ", playlist_count, "in playlist")
-  for i = 0, playlist_pos-1 do
-    mp.commandv("loadfile", playlist[i], "append")
-  end
-  mp.commandv("playlist-move", 0, playlist_pos+1)
-  for i = playlist_pos+1, playlist_count-1 do
-    mp.commandv("loadfile", playlist[i], "append")
+
+  local playlist_count = mp.get_property_number("playlist/count")
+  if playlist_count > 1 then
+    local playlist_pos = mp.get_property_number("playlist-pos")
+    msg.info("file", playlist_pos+1, "of", playlist_count, "in playlist")
+    reload_playlist(path, time_pos, playlist_count, playlist_pos)
+  else
+    reload_single(path, time_pos)
   end
 end
 
